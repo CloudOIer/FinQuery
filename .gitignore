@@ -1,0 +1,53 @@
+# Local runtime state
+.local/
+.vscode/
+.idea/
+.DS_Store
+logfile
+*.dump
+*.log
+*.sqlite
+*.sqlite3
+
+# Python/build caches
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+dist/
+build/
+.venv/
+venv/
+
+# Secrets and machine-local configuration
+.env
+.env.*
+!.env.example
+config/llm.json
+config/rag.json
+
+# Generated indexes and extraction outputs
+data/
+
+
+# Local model weights (download from the upstream model registry)
+bge-base-zh-v1.5/
+bge-reranker-base/
+
+# Third-party reference implementation; not part of FinQuery's public source
+参考项目/
+
+# Internal preparation notes (kept locally)
+docs/
+
+# Competition/raw source data. Keep only the minimal registry metadata required
+# by the public test suite, subject to the competition's redistribution terms.
+第一批数据/*
+!第一批数据/数据库信息/
+!第一批数据/数据库信息/*.csv
+!第一批数据/公司基本信息/
+!第一批数据/公司基本信息/*.csv

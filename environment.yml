@@ -1,0 +1,18 @@
+name: finquery-agent
+channels:
+  - conda-forge
+dependencies:
+  - python=3.11
+  - postgresql
+  - sqlalchemy
+  - psycopg
+  - fastapi
+  - uvicorn
+  - pydantic
+  - pytest
+  - requests
+  - pdfplumber
+  - pymupdf
+  - pip
+  - pip:
+      - -e .[dev]

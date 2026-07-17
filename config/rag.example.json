@@ -1,0 +1,26 @@
+{
+  "enabled": true,
+  "data_roots": [
+    "第一批数据/研报数据/研报markdown"
+  ],
+  "metadata_files": {
+    "stock_reports": "第一批数据/研报信息/个股_研报信息.CSV",
+    "industry_reports": "第一批数据/研报信息/行业_研报信息.CSV"
+  },
+  "index_dir": "data/rag",
+  "chunk_size": 800,
+  "chunk_overlap": 150,
+  "retrieval": {
+    "use_vector": true,
+    "embedding_model": "BAAI/bge-small-zh-v1.5",
+    "embedding_batch_size": 32,
+    "bm25_top_k": 20,
+    "vector_top_k": 20,
+    "final_top_k": 8,
+    "use_reranker": true,
+    "reranker_model": "bge-reranker-base",
+    "rerank_candidate_k": 30,
+    "rerank_batch_size": 16,
+    "max_chunks_per_doc": 2
+  }
+}

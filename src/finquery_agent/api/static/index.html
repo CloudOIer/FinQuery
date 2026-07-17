@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>FinQuery 智能问数</title>
+    <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+  <body>
+    <main class="chat-shell">
+      <aside class="sidebar" aria-label="对话列表">
+        <div class="brand-block">
+          <div class="brand-mark">FQ</div>
+          <div>
+            <div class="brand-name">FinQuery</div>
+            <div class="brand-subtitle">智能财报问数</div>
+          </div>
+        </div>
+
+        <button type="button" id="new-chat" class="new-chat-button">新对话</button>
+        <nav id="conversation-list" class="conversation-list" aria-label="历史对话"></nav>
+      </aside>
+
+      <section class="chat-panel" aria-label="对话窗口">
+        <header class="chat-header">
+          <h1>智能财报问数</h1>
+        </header>
+
+        <div id="messages" class="message-list" aria-live="polite"></div>
+
+        <form id="query-form" class="composer">
+          <label class="sr-only" for="question">输入问题</label>
+          <textarea id="question" name="question" rows="1" placeholder="输入你的财报问题"></textarea>
+          <label class="agent-toggle" title="Agent 模式:多步拆解复杂问题(查数→计算→检索研报),可展示执行过程">
+            <input type="checkbox" id="agent-mode" />
+            <span>Agent</span>
+          </label>
+          <button type="submit" id="submit-button">发送</button>
+        </form>
+      </section>
+    </main>
+
+    <script src="/static/app.js"></script>
+  </body>
+</html>
