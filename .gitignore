@@ -43,6 +43,7 @@ bge-reranker-base/
 
 # Internal preparation notes (kept locally)
 docs/
+简历项目介绍.md
 
 # Competition/raw source data. Keep only the minimal registry metadata required
 # by the public test suite, subject to the competition's redistribution terms.
