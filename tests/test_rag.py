@@ -1,10 +1,11 @@
 import pytest
+from dataclasses import replace
 
 from finquery_agent.config import LLMSettings, RAGSettings
 from finquery_agent.rag.index import build_rag_index, load_rag_index
 from finquery_agent.rag.loader import chunk_documents, load_research_documents
 from finquery_agent.rag.models import ResearchChunk, SearchResult
-from finquery_agent.rag.retriever import HybridRetriever
+from finquery_agent.rag.retriever import HybridRetriever, _fuse
 from finquery_agent.rag.service import RAGAnswer, RAGService
 
 
@@ -75,6 +76,96 @@ def test_bm25_retriever_finds_relevant_research_chunk(tmp_path):
     assert "CXO" in results[0].chunk.title
     assert "海外" in results[0].chunk.text
     assert results[0].score > 0
+
+
+def test_rrf_fusion_does_not_penalise_single_channel_hits():
+    """加权求和把未命中通道按 0 计,单路命中的 chunk 会被双路平庸的 chunk 反超;
+    RRF 只看排名,不受两路分数量纲差异影响。"""
+    channels = {
+        "bm25": [("a", 1.0), ("b", 0.9)],
+        "vector": [("b", 0.95), ("c", 0.94)],
+    }
+    settings = RAGSettings()
+
+    weighted = _fuse(channels, replace(settings, fusion_method="weighted"))
+    rrf = _fuse(channels, replace(settings, fusion_method="rrf"))
+    weighted_order = [chunk_id for chunk_id, _, _ in sorted(weighted, key=lambda item: item[1], reverse=True)]
+    rrf_order = [chunk_id for chunk_id, _, _ in sorted(rrf, key=lambda item: item[1], reverse=True)]
+
+    assert weighted_order == ["b", "c", "a"]
+    assert rrf_order == ["b", "a", "c"]
+
+
+def test_candidate_quota_broadens_document_coverage(tmp_path):
+    markdown_dir = _write_multi_doc_rag_files(tmp_path)
+    settings = RAGSettings(
+        data_roots=(markdown_dir,),
+        index_dir=tmp_path / "rag-index",
+        chunk_size=160,
+        chunk_overlap=20,
+        use_vector=False,
+        use_reranker=False,
+        final_top_k=3,
+        bm25_top_k=20,
+    )
+    build_rag_index(settings, use_vector=False)
+    retriever = HybridRetriever(load_rag_index(settings.index_dir), settings)
+
+    unlimited = retriever.search("CXO景气度和海外订单", use_vector=False)
+    retriever.settings = replace(settings, candidate_max_chunks_per_doc=1)
+    deduplicated = retriever.search("CXO景气度和海外订单", use_vector=False)
+
+    assert len({result.chunk.doc_id for result in deduplicated}) == 3
+    assert len({result.chunk.doc_id for result in deduplicated}) >= len({result.chunk.doc_id for result in unlimited})
+
+
+def test_final_scope_reranking_reorders_without_changing_result_set(tmp_path):
+    markdown_dir = _write_multi_doc_rag_files(tmp_path)
+    settings = RAGSettings(
+        data_roots=(markdown_dir,),
+        index_dir=tmp_path / "rag-index",
+        chunk_size=160,
+        chunk_overlap=20,
+        use_vector=False,
+        final_top_k=3,
+        bm25_top_k=20,
+        candidate_max_chunks_per_doc=1,
+    )
+    build_rag_index(settings, use_vector=False)
+    retriever = HybridRetriever(load_rag_index(settings.index_dir), settings)
+    retriever._reranker = _ReversingReranker()
+
+    baseline = retriever.search("CXO景气度和海外订单", use_vector=False, use_reranker=False)
+    reranked = retriever.search("CXO景气度和海外订单", use_vector=False, use_reranker=True)
+
+    assert [result.chunk.chunk_id for result in reranked] == [result.chunk.chunk_id for result in reversed(baseline)]
+
+
+class _ReversingReranker:
+    """精排作用域的判定只关心"谁来决定集合、谁来决定顺序",用确定性桩替代真实模型。"""
+
+    def rerank(self, question, results, top_k):
+        return list(reversed(results))[:top_k]
+
+
+def _write_multi_doc_rag_files(tmp_path):
+    markdown_dir = tmp_path / "研报markdown"
+    markdown_dir.mkdir()
+    for index in range(3):
+        (markdown_dir / f"CXO景气度报告{index}.md").write_text(
+            f"""# CXO景气度报告{index}
+
+## 行业观点
+
+CXO行业订单边际改善，海外需求逐步恢复，医药外包企业在手订单和产能利用率是判断行业景气度最重要的两个先行指标。
+
+## 需求侧
+
+CXO海外订单景气度显著回升，海外客户需求持续恢复，主要企业产能利用率同步提升，带动整体收入增速环比改善。
+""",
+            encoding="utf-8",
+        )
+    return markdown_dir
 
 
 def test_rag_service_generates_deterministic_answer(tmp_path):

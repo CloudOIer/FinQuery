@@ -30,7 +30,7 @@ class HybridRetriever:
         industries: tuple[str, ...] = (),
         report_type: str | None = None,
     ) -> list[SearchResult]:
-        """两阶段检索:粗排融合 → (可选)cross-encoder 精排 → 文档多样性配额 → top_k。
+        """两阶段检索:粗排融合 → 候选阶段文档配额 → (可选)cross-encoder 精排 → 文档配额 → top_k。
 
         stock_codes/industries/report_type 为元数据硬过滤(在粗排后、精排前应用):
         把"只看某公司/某行业的研报"从调用方的事后筛选下沉为检索能力,
@@ -44,33 +44,34 @@ class HybridRetriever:
         # 精排/过滤都需要比最终 top_k 更多的粗排候选;有过滤时再放大一档,
         # 补偿被过滤掉的候选。
         candidate_k = max(top_k, self.settings.rerank_candidate_k if use_reranker else top_k)
-        coarse_k = candidate_k * 3 if has_filter else candidate_k
+        pool_k = max(candidate_k, self.settings.coarse_pool_k)
+        coarse_k = pool_k * 3 if has_filter else pool_k
 
         results = self._coarse_search(question, coarse_k, use_vector)
         if has_filter:
             results = [r for r in results if _matches_filters(r.chunk, stock_codes, industries, report_type)]
+        results = _apply_doc_quota(results, self.settings.candidate_max_chunks_per_doc)
         results = results[:candidate_k]
-        if use_reranker and len(results) > 1:
+        rerank_scope = self.settings.rerank_scope
+        if use_reranker and rerank_scope == "candidates" and len(results) > 1:
             results = self._reranker.rerank(question, results, top_k=len(results))
-        results = _apply_doc_quota(results, self.settings.max_chunks_per_doc)
-        return results[:top_k]
+        results = _apply_doc_quota(results, self.settings.max_chunks_per_doc)[:top_k]
+        if use_reranker and rerank_scope == "final" and len(results) > 1:
+            results = self._reranker.rerank(question, results, top_k=len(results))
+        return results
 
     def _coarse_search(self, question: str, top_k: int, use_vector: bool) -> list[SearchResult]:
-        scores: dict[str, dict[str, float]] = defaultdict(dict)
-        for chunk_id, score in self._bm25_search(question, max(top_k, self.settings.bm25_top_k)):
-            scores[chunk_id]["bm25"] = score
+        channels: dict[str, list[tuple[str, float]]] = {
+            "bm25": self._bm25_search(question, max(top_k, self.settings.bm25_top_k)),
+        }
         if use_vector and self.index.vector_index is not None and self.index.vector_chunk_ids:
-            for chunk_id, score in self._vector_search(question, max(top_k, self.settings.vector_top_k)):
-                scores[chunk_id]["vector"] = score
+            channels["vector"] = self._vector_search(question, max(top_k, self.settings.vector_top_k))
         results = []
-        for chunk_id, detail in scores.items():
+        for chunk_id, score, detail in _fuse(channels, self.settings):
             chunk = self._chunk_by_id.get(chunk_id)
             if chunk is None:
                 continue
-            combined = detail.get("bm25", 0.0) * 0.45 + detail.get("vector", 0.0) * 0.55
-            if combined <= 0:
-                continue
-            results.append(SearchResult(chunk=chunk, score=combined, score_detail=detail))
+            results.append(SearchResult(chunk=chunk, score=score, score_detail=detail))
         return sorted(results, key=lambda item: item.score, reverse=True)[:top_k]
 
     def _bm25_search(self, question: str, top_k: int) -> list[tuple[str, float]]:
@@ -129,6 +130,27 @@ class HybridRetriever:
 
             self._embedding_model = SentenceTransformer(self.settings.embedding_model)
         return self._embedding_model
+
+
+def _fuse(
+    channels: dict[str, list[tuple[str, float]]],
+    settings: RAGSettings,
+) -> list[tuple[str, float, dict[str, float]]]:
+    """合并多路召回。
+
+    rrf 仅用排名:两路分数量纲不同(BM25 无界、余弦有界),归一化后仍会因
+    候选集内 max 缩放而失真,且单路命中的 chunk 会被"缺失通道记 0"隐式惩罚。
+    weighted 保留原加权求和,仅用于消融对比。
+    """
+    weights = {"bm25": settings.bm25_weight, "vector": settings.vector_weight}
+    use_rrf = settings.fusion_method == "rrf"
+    detail: dict[str, dict[str, float]] = defaultdict(dict)
+    combined: dict[str, float] = defaultdict(float)
+    for name, pairs in channels.items():
+        for rank, (chunk_id, score) in enumerate(pairs, start=1):
+            detail[chunk_id][name] = score
+            combined[chunk_id] += 1.0 / (settings.rrf_k + rank) if use_rrf else weights.get(name, 0.0) * score
+    return [(chunk_id, score, dict(detail[chunk_id])) for chunk_id, score in combined.items() if score > 0]
 
 
 def _matches_filters(

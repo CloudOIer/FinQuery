@@ -94,12 +94,29 @@ class RAGSettings:
     vector_top_k: int = 20
     final_top_k: int = 8
     embedding_batch_size: int = 32
+    # 粗排融合方式。BM25 分数无界、余弦相似度在 [-1,1],加权求和需要先归一化,
+    # 而候选集内 max 归一化会让每路 top-1 恒为 1.0(丢失"这一路有多大把握"),
+    # 且未命中通道按 0 计算等于惩罚单路命中。rrf 只用排名,规避上述问题。
+    fusion_method: str = "rrf"
+    rrf_k: int = 60
+    bm25_weight: float = 0.45
+    vector_weight: float = 0.55
     # 两阶段检索:粗排(BM25+向量融合)取 rerank_candidate_k 个候选,再用
     # cross-encoder 精排。精排模型加载失败时自动降级为粗排结果。
     use_reranker: bool = True
     reranker_model: str = "bge-reranker-base"
     rerank_candidate_k: int = 30
     rerank_batch_size: int = 16
+    # 粗排先按 coarse_pool_k 放大召回,再按 candidate_max_chunks_per_doc 收敛回
+    # rerank_candidate_k。同一篇研报的相邻 chunk 得分接近,不加限制时精排预算会被
+    # 少数几篇文档的重复片段吃完;先扩再按文档去重可在相同精排成本下覆盖更多文档。
+    coarse_pool_k: int = 200
+    candidate_max_chunks_per_doc: int = 1
+    # 精排作用域。candidates:精排决定最终返回哪些 chunk(标准两阶段做法);
+    # final:只对已选定的 top_k 重排序。候选阶段按文档去重后,每篇文档只剩粗排
+    # 选中的一个片段,cross-encoder 据此做文档取舍反而不如融合排名可靠;交给它定序
+    # 则仍能提升首条命中位置,且打分对数从 candidate_k 降到 top_k。
+    rerank_scope: str = "final"
     # 同一文档最多返回的 chunk 数(0=不限),避免 top_k 被单篇文档占满。
     max_chunks_per_doc: int = 2
 
@@ -139,10 +156,17 @@ def load_rag_settings(config_file: Path | None = None) -> RAGSettings:
         vector_top_k=int(retrieval.get("vector_top_k", defaults.vector_top_k)),
         final_top_k=int(retrieval.get("final_top_k", defaults.final_top_k)),
         embedding_batch_size=int(retrieval.get("embedding_batch_size", defaults.embedding_batch_size)),
+        fusion_method=str(retrieval.get("fusion_method", defaults.fusion_method)),
+        rrf_k=int(retrieval.get("rrf_k", defaults.rrf_k)),
+        bm25_weight=float(retrieval.get("bm25_weight", defaults.bm25_weight)),
+        vector_weight=float(retrieval.get("vector_weight", defaults.vector_weight)),
         use_reranker=bool(retrieval.get("use_reranker", defaults.use_reranker)),
         reranker_model=str(retrieval.get("reranker_model", defaults.reranker_model)),
         rerank_candidate_k=int(retrieval.get("rerank_candidate_k", defaults.rerank_candidate_k)),
         rerank_batch_size=int(retrieval.get("rerank_batch_size", defaults.rerank_batch_size)),
+        coarse_pool_k=int(retrieval.get("coarse_pool_k", defaults.coarse_pool_k)),
+        candidate_max_chunks_per_doc=int(retrieval.get("candidate_max_chunks_per_doc", defaults.candidate_max_chunks_per_doc)),
+        rerank_scope=str(retrieval.get("rerank_scope", defaults.rerank_scope)),
         max_chunks_per_doc=int(retrieval.get("max_chunks_per_doc", defaults.max_chunks_per_doc)),
     )
 

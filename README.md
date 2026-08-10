@@ -16,7 +16,7 @@
 | --- | --- | --- |
 | 数据构建(离线) | 财报 PDF → 结构化四表(staging → 质检 → 正式表);研报 markdown → 混合检索索引 | scripts/ |
 | 智能问数 | 自然语言 → 槽位 → 受控 DSL → 参数化 SQL;缺槽位自动澄清追问;多轮会话 | `POST /query/ask` |
-| 研报问答 | BM25+向量粗排 → cross-encoder 精排 → 多样性配额;元数据硬过滤 | `POST /rag/ask` |
+| 研报问答 | BM25+向量双路 RRF 融合 → 候选文档去重 → cross-encoder 精排定序;元数据硬过滤 | `POST /rag/ask` |
 | 融合分析 | 财务数字与研报观点分离取证、统一作答 | `POST /analysis/ask` |
 | Agent 模式 | LLM function-calling 循环自主规划多步查询(四工具),带执行轨迹 | `POST /analysis/ask` + `use_agent` |
 
@@ -33,7 +33,7 @@
 | --- | --- |
 | 意图引擎:官方题目 | 使用规则引擎解析成功率达90%以上 |
 | 意图引擎:25 道变体题(口语化/换表述/错别字) | 使用LLM引擎解析成功率达到96% | 
-| RAG 检索:文档级消融 | hybrid+rerank hit_rate 91.3% / recall 59.1% |
+| RAG 检索:文档级消融 | RRF 混合检索 hit_rate 90.9% / recall 66.5%(22 题,较原基线 recall +9.3pt、耗时 -73%) |
 | Agent模式 vs 固定工作流:30 道多意图/归因题盲评 | Agent 胜率 83%(25/30),0 降级 |
 
 ## 问答结果示例
