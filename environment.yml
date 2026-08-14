@@ -15,4 +15,4 @@ dependencies:
   - pymupdf
   - pip
   - pip:
-      - -e .[dev,mcp]
+      - -e .[dev,mcp,graph]

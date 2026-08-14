@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from threading import Lock
+from typing import Iterator, Literal
 
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -69,6 +71,8 @@ class AnalysisAskRequest(BaseModel):
     rag_top_k: int = Field(default=8, ge=1, le=30)
     # Agent 模式:LLM 自主规划工具调用(多步查数/计算/检索);失败自动降级回单轮管道。
     use_agent: bool = False
+    # 执行引擎:loop 为自研循环,graph 为 LangGraph 状态图;两者响应结构一致。
+    agent_engine: Literal["loop", "graph"] | None = None
 
 
 app = FastAPI(title="FinQuery Agent API", version="0.1.0")
@@ -202,12 +206,37 @@ def analysis_ask(request: AnalysisAskRequest) -> dict[str, object]:
     }
     try:
         if request.use_agent:
-            result = get_agent_service().ask(question, **analysis_kwargs)
+            result = get_agent_service().ask(question, engine=request.agent_engine, **analysis_kwargs)
         else:
             result = get_analysis_service().ask(question, **analysis_kwargs)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"融合分析失败: {exc}") from exc
     return result.to_dict()
+
+
+@app.post("/analysis/ask/stream")
+def analysis_ask_stream(request: AnalysisAskRequest) -> StreamingResponse:
+    """以 SSE 增量推送 Agent 执行过程,末尾推送完整结果。
+
+    执行过程本身有信息量,等全流程结束再一次性展示等于把进度信息留到了最没用的时刻。
+    仅状态图引擎支持;失败时推送 error 事件而不是中断连接,前端据此回落到同步接口。
+    """
+    question = request.question.strip()
+    if not question:
+        raise HTTPException(status_code=400, detail="question 不能为空")
+
+    def emit() -> Iterator[str]:
+        try:
+            for event in get_agent_service().stream(question, session_id=request.session_id):
+                yield f"data: {json.dumps(event, ensure_ascii=False, default=str)}\n\n"
+        except Exception as exc:
+            yield f"data: {json.dumps({'event': 'error', 'detail': str(exc)}, ensure_ascii=False)}\n\n"
+
+    return StreamingResponse(
+        emit(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 @app.post("/nl2sql/generate")

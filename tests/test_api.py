@@ -280,3 +280,118 @@ def _fake_rag_result():
         publish_date="2025-10-01",
     )
     return SearchResult(chunk=chunk, score=0.9, score_detail={"bm25": 1.0})
+
+
+# ----------------------------------------------------------------------
+# Agent 模式与流式接口
+# ----------------------------------------------------------------------
+
+def _trace_step(index=1, tool="query_financial_data"):
+    return {
+        "step": index,
+        "tool": tool,
+        "arguments": {"metrics": ["营业总收入"]},
+        "status": "ok",
+        "summary": "查询返回:core 1行",
+        "elapsed_seconds": 0.12,
+    }
+
+
+def _sse_events(text):
+    import json as _json
+
+    return [
+        _json.loads(frame.strip()[5:].strip())
+        for frame in text.split("\n\n")
+        if frame.strip().startswith("data:")
+    ]
+
+
+def test_analysis_ask_api_agent_mode_returns_execution_trace(monkeypatch):
+    from finquery_agent.analysis.service import AnalysisResult
+
+    captured = {}
+
+    class FakeAgentService:
+        def ask(self, question, session_id=None, engine=None, **kwargs):
+            captured["session_id"] = session_id
+            captured["engine"] = engine
+            return AnalysisResult(
+                status="answer",
+                answer_text="Agent 回答",
+                answer_source="agent_llm",
+                llm_used=True,
+                execution_trace=[_trace_step()],
+            )
+
+    monkeypatch.setattr(api_main, "_agent_service", FakeAgentService())
+    client = TestClient(app)
+
+    response = client.post(
+        "/analysis/ask",
+        json={"question": "白云山2024年营收", "use_agent": True, "session_id": "s-1", "agent_engine": "graph"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["answer_source"] == "agent_llm"
+    assert payload["execution_trace"][0]["tool"] == "query_financial_data"
+    assert captured == {"session_id": "s-1", "engine": "graph"}
+
+
+def test_analysis_ask_api_rejects_unknown_engine():
+    client = TestClient(app)
+
+    response = client.post(
+        "/analysis/ask",
+        json={"question": "白云山2024年营收", "use_agent": True, "agent_engine": "不存在的引擎"},
+    )
+
+    assert response.status_code == 422
+
+
+def test_analysis_ask_stream_emits_steps_then_result(monkeypatch):
+    class FakeAgentService:
+        def stream(self, question, session_id=None):
+            yield {"event": "step", "step": _trace_step(1)}
+            yield {"event": "step", "step": _trace_step(2, "calculate")}
+            yield {"event": "result", "result": {"status": "answer", "answer_text": "最终回答"}}
+
+    monkeypatch.setattr(api_main, "_agent_service", FakeAgentService())
+    client = TestClient(app)
+
+    response = client.post("/analysis/ask/stream", json={"question": "白云山2024年营收", "use_agent": True})
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/event-stream")
+    events = _sse_events(response.text)
+    assert [event["event"] for event in events] == ["step", "step", "result"]
+    assert events[1]["step"]["tool"] == "calculate"
+    assert events[-1]["result"]["answer_text"] == "最终回答"
+
+
+def test_analysis_ask_stream_reports_failure_as_event(monkeypatch):
+    """失败要以事件形式送达,而不是中断连接——前端据此回落到同步接口。"""
+
+    class FakeAgentService:
+        def stream(self, question, session_id=None):
+            yield {"event": "step", "step": _trace_step()}
+            raise RuntimeError("LLM 不可用")
+
+    monkeypatch.setattr(api_main, "_agent_service", FakeAgentService())
+    client = TestClient(app)
+
+    response = client.post("/analysis/ask/stream", json={"question": "白云山2024年营收", "use_agent": True})
+
+    assert response.status_code == 200
+    events = _sse_events(response.text)
+    assert events[-1]["event"] == "error"
+    assert "LLM 不可用" in events[-1]["detail"]
+
+
+def test_analysis_ask_stream_rejects_empty_question():
+    client = TestClient(app)
+
+    response = client.post("/analysis/ask/stream", json={"question": "   "})
+
+    assert response.status_code == 400

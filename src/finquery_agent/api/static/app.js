@@ -127,7 +127,7 @@ function renderMessage(message) {
   const chartImages = message.chartImages || (message.chartImage ? [message.chartImage] : []);
   const charts = chartImages.map(renderChartImage).join('');
   const sources = message.sources && message.sources.length ? renderSources(message.sources) : '';
-  const trace = message.trace && message.trace.length ? renderTrace(message.trace) : '';
+  const trace = message.trace && message.trace.length ? renderTrace(message.trace, message.loading) : '';
   return `
     <article class="message ${escapeHtml(message.role)}${loadingClass}">
       <div class="message-bubble">
@@ -140,7 +140,7 @@ function renderMessage(message) {
   `;
 }
 
-function renderTrace(trace) {
+function renderTrace(trace, expanded) {
   const items = trace.map((step) => {
     const statusClass = step.status === 'error' ? ' trace-error' : '';
     const args = step.arguments && Object.keys(step.arguments).length ? JSON.stringify(step.arguments) : '';
@@ -152,7 +152,8 @@ function renderTrace(trace) {
       </li>
     `;
   }).join('');
-  return `<details class="trace-list"><summary>执行过程(${trace.length} 步)</summary><ol>${items}</ol></details>`;
+  // 执行中默认展开:此时进度就是用户最关心的信息。
+  return `<details class="trace-list"${expanded ? ' open' : ''}><summary>执行过程(${trace.length} 步)</summary><ol>${items}</ol></details>`;
 }
 
 function renderChartImage(chartImage) {
@@ -211,6 +212,90 @@ function replaceMessage(messageId, patch) {
   renderMessages();
 }
 
+function askPayload(question, conversationId, agentMode) {
+  return {
+    question,
+    use_llm: true,
+    use_rag: true,
+    use_vector: true,
+    rag_top_k: 8,
+    session_id: conversationId,
+    use_agent: agentMode,
+  };
+}
+
+async function askOnce(question, conversationId, agentMode) {
+  const response = await fetch('/analysis/ask', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(askPayload(question, conversationId, agentMode)),
+  });
+  const payload = await response.json();
+  if (!response.ok) throw new Error(payload.detail || `HTTP ${response.status}`);
+  return payload;
+}
+
+const TOOL_LABELS = {
+  query_financial_data: '查询财务数据',
+  search_research_reports: '检索研报',
+  calculate: '计算',
+  render_chart: '生成图表',
+};
+
+async function askStreaming(question, conversationId, pendingMessageId) {
+  const response = await fetch('/analysis/ask/stream', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(askPayload(question, conversationId, true)),
+  });
+  if (!response.ok || !response.body) throw new Error(`HTTP ${response.status}`);
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  const steps = [];
+  let buffer = '';
+  let result = null;
+
+  const showProgress = (text) => replaceMessage(pendingMessageId, { text, trace: steps.slice(), loading: true });
+
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const frames = buffer.split('\n\n');
+    buffer = frames.pop() || '';
+    for (const frame of frames) {
+      const line = frame.trim();
+      if (!line.startsWith('data:')) continue;
+      const event = JSON.parse(line.slice(5).trim());
+      switch (event.event) {
+        case 'thinking':
+          showProgress(steps.length ? `已完成 ${steps.length} 步，正在思考下一步…` : '正在理解问题…');
+          break;
+        case 'tool_start':
+          showProgress(`正在${TOOL_LABELS[event.tool] || event.tool}…`);
+          break;
+        case 'summarizing':
+          showProgress('正在汇总回答…');
+          break;
+        case 'step':
+          steps.push(event.step);
+          showProgress(`已完成 ${steps.length} 步`);
+          break;
+        case 'result':
+          result = event.result;
+          break;
+        case 'error':
+          throw new Error(event.detail || '流式执行失败');
+        default:
+          break;
+      }
+    }
+  }
+  if (!result) throw new Error('流式执行未返回结果');
+  return result;
+}
+
 async function submitQuestion(event) {
   event.preventDefault();
   const question = questionInput.value.trim();
@@ -230,27 +315,24 @@ async function submitQuestion(event) {
 
   try {
     const agentMode = Boolean(document.getElementById('agent-mode')?.checked);
-    const response = await fetch('/analysis/ask', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        question,
-        use_llm: true,
-        use_rag: true,
-        use_vector: true,
-        rag_top_k: 8,
-        session_id: conversation.id,
-        use_agent: agentMode,
-      }),
-    });
-    const payload = await response.json();
-    if (!response.ok) {
-      throw new Error(payload.detail || `HTTP ${response.status}`);
+    let payload;
+    if (agentMode) {
+      // 流式不可用(服务端未更新/网络中断)时回落到同步接口;留痕以免故障被静默吞掉。
+      try {
+        payload = await askStreaming(question, conversation.id, pendingMessageId);
+      } catch (streamError) {
+        console.warn('[FinQuery] 流式请求失败，回落到同步接口：', streamError);
+        replaceMessage(pendingMessageId, { text: '正在查询...', trace: [], loading: true });
+        payload = await askOnce(question, conversation.id, true);
+      }
+    } else {
+      payload = await askOnce(question, conversation.id, false);
     }
 
     if (payload.status === 'clarification') {
       replaceMessage(pendingMessageId, {
         text: payload.clarification?.question || '需要补充信息后才能继续查询。',
+        trace: [],
         loading: false,
       });
       return;
@@ -266,6 +348,7 @@ async function submitQuestion(event) {
   } catch (error) {
     replaceMessage(pendingMessageId, {
       text: `请求失败：${error.message}`,
+      trace: [],
       loading: false,
     });
   } finally {

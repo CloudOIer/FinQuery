@@ -18,7 +18,8 @@
 | 智能问数 | 自然语言 → 槽位 → 受控 DSL → 参数化 SQL;缺槽位自动澄清追问;多轮会话 | `POST /query/ask` |
 | 研报问答 | BM25+向量双路 RRF 融合 → 候选文档去重 → cross-encoder 精排定序;元数据硬过滤 | `POST /rag/ask` |
 | 融合分析 | 财务数字与研报观点分离取证、统一作答 | `POST /analysis/ask` |
-| Agent 模式 | LLM function-calling 循环自主规划多步查询(四工具),带执行轨迹 | `POST /analysis/ask` + `use_agent` |
+| Agent 模式 | LLM function-calling 自主规划多步查询(四工具),带执行轨迹;双引擎可切换(自研循环 / LangGraph 状态图) | `POST /analysis/ask` + `use_agent` |
+| 执行过程流式 | Agent 每完成一步即推送执行轨迹,前端增量展示;失败自动回落同步接口 | `POST /analysis/ask/stream` |
 
 ## 核心设计原则
 
@@ -44,6 +45,7 @@
 ![5](assets/screenshots/追问.png)
 ![6](assets/screenshots/带有参考文献的研报RAG.png)
 ![7](assets/screenshots/开放性问题.png)
+![8](assets/screenshots/流式输出.png)
 
 ## 公开仓库的数据边界
 

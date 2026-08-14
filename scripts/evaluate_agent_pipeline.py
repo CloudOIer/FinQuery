@@ -56,14 +56,20 @@ def main() -> None:
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
     parser.add_argument("--limit", type=int, default=0)
     parser.add_argument("--seed", type=int, default=42, help="A/B 随机换位的种子,保证可复现。")
+    parser.add_argument(
+        "--agent-engine",
+        choices=("loop", "graph"),
+        default="loop",
+        help="Agent 执行引擎。切换前应对同一批题目双跑并比对胜率、步数与耗时。",
+    )
     args = parser.parse_args()
 
     questions = _load_questions(args.questions)
     if args.limit:
         questions = questions[: args.limit]
-    print(f"{len(questions)} questions (types: {TARGET_TYPES})")
+    print(f"{len(questions)} questions (types: {TARGET_TYPES}) | engine={args.agent_engine}")
 
-    analysis, agent = _build_services()
+    analysis, agent = _build_services(args.agent_engine)
     judge = LLMClient(load_llm_settings())
     if not judge.is_available():
         raise SystemExit("judge LLM 不可用:检查 config/llm.json。")
@@ -80,7 +86,7 @@ def main() -> None:
     print(f"wrote {args.output}")
 
 
-def _build_services() -> tuple[AnalysisService, AgentService]:
+def _build_services(engine: str = "loop") -> tuple[AnalysisService, AgentService]:
     registry = load_default_registry()
     llm = load_llm_settings()
     analysis = AnalysisService(
@@ -93,7 +99,7 @@ def _build_services() -> tuple[AnalysisService, AgentService]:
         rag_service=RAGService(load_rag_settings(), llm),
         llm_settings=llm,
     )
-    return analysis, AgentService(analysis, llm)
+    return analysis, AgentService(analysis, llm, engine=engine)
 
 
 def _load_questions(path: Path) -> list[dict[str, str]]:

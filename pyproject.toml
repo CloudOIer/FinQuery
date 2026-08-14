@@ -21,6 +21,9 @@ dev = [
 mcp = [
     "mcp>=2.0",
 ]
+graph = [
+    "langgraph>=1.0",
+]
 pdf = [
     "pdfplumber>=0.11",
     "pymupdf>=1.24",
